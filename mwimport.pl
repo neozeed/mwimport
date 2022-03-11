@@ -20,16 +20,14 @@ my $skip = 0;
 ## set this to 1 to match "mwdumper --format=sql:1.5" as close as possible
 sub Compat() { 0 }
 
-# 512kB is what mwdumper uses, but 4MB gives much better performance here
-my $Buffer_Size = Compat ? 512*1024 : 4*1024*1024;
-
 sub textify($)
 {
   my $l;
   for ($_[0]) {
     if (defined $_) {
       s/&quot;/"/ig;
-      s/&lt;//ig;
+      s/&lt;/</ig;
+      s/&gt;/>/ig;
       /&(?!amp;)(.*?;)/ and die "textify: does not know &$1";
       s/&amp;/&/ig;
       $l = length $_;
@@ -54,7 +52,7 @@ sub getline()
 
 sub ignore_elt($)
 {
-  m|^\s*<$_[0]>.*?\n$| or die "expected $_[0] element in line $.\n";
+  m|^\s*<$_[0]>.*?</$_[0]>\n$| or die "expected $_[0] element in line $.\n";
   getline;
 }
 
@@ -62,7 +60,7 @@ sub simple_elt($$)
 {
   if (m|^\s*<$_[0]\s*/>\n$|) {
     $_[1]{$_[0]} = '';
-  } elsif (m|^\s*<$_[0]>(.*?)\n$|) {
+  } elsif (m|^\s*<$_[0]>(.*?)</$_[0]>\n$|) {
     $_[1]{$_[0]} = $1;
   } else {
     die "expected $_[0] element in line $.\n";
@@ -74,7 +72,7 @@ sub simple_opt_elt($$)
 {
   if (m|^\s*<$_[0]\s*/>\n$|) {
     $_[1]{$_[0]} = '';
-  } elsif (m|^\s*<$_[0]>(.*?)\n$|) {
+  } elsif (m|^\s*<$_[0]>(.*?)</$_[0]>\n$|) {
     $_[1]{$_[0]} = $1;
   } else {
     return;
@@ -90,14 +88,14 @@ sub opening_tag($)
 
 sub closing_tag($)
 {
-  m|^\s*\n$| or die "$_[0]: expected closing tag in line $.\n";
+  m|^\s*</$_[0]>\n$| or die "$_[0]: expected closing tag in line $.\n";
   getline;
 }
 
 sub si_nss_namespace()
 {
-  m|^\s*()\n|
-    or m|^\s*(.*?)\n|
+  m|^\s*<namespace key="(-?\d+)"\s*/>()\n|
+    or m|^\s*<namespace key="(-?\d+)">(.*?)</namespace>\n|
     or die "expected namespace element in line $.\n";
   $namespace{$2} = $1;
   getline;
@@ -125,13 +123,11 @@ sub siteinfo()
     simple_elt sitename => \%site;
     simple_elt base => \%site;
     simple_elt generator => \%site;
-    $site{generator} =~ /^MediaWiki 1.(9|10)alpha$/
-      or warn("siteinfo: untested generator '$site{generator}',",
-	      " expect trouble ahead\n");
+    $site{generator} =~ /^MediaWiki 1.9alpha$/ or warn "siteinfo: untested ",
+      "generator '$site{generator}', expect trouble ahead\n";
     simple_elt case => \%site;
     si_namespaces;
     print "-- MediaWiki XML dump converted to SQL by mwimport
-BEGIN;
 
 -- Site: $site{sitename}
 -- URL: $site{base}
@@ -169,9 +165,9 @@ sub pg_rv_contributor($)
 
 sub pg_rv_comment($)
 {
-  if (m|^\s*\s*\n|) {
+  if (m|^\s*<comment\s*/>\s*\n|) {
     getline;
-  } elsif (s|^\s*([^<]*)||g) {
+  } elsif (s|^\s*<comment>([^<]*)||g) {
     while (1) {
       $_[0]{comment} .= $1;
       last if $_;
@@ -186,10 +182,10 @@ sub pg_rv_comment($)
 
 sub pg_rv_text($)
 {
-  if (m|^\s*\s*\n|) {
+  if (m|^\s*<text xml:space="preserve"\s*/>\s*\n|) {
     $_[0]{text} = '';
     getline;
-  } elsif (s|^\s*([^<]*)||g) {
+  } elsif (s|^\s*<text xml:space="preserve">([^<]*)||g) {
     while (1) {
       $_[0]{text} .= $1;
       last if $_;
@@ -202,41 +198,7 @@ sub pg_rv_text($)
   }
 }
 
-my $start = time;
-
-sub stats()
-{
-  my $s = time - $start;
-  $s ||= 1;
-  printf STDERR "%9d pages (%7.3f/s), %9d revisions (%7.3f/s) in %d seconds\n",
-    $cnt_page, $cnt_page/$s, $cnt_rev, $cnt_rev/$s, $s;
-}
-
-### flush_rev($text, $rev, $page)
-sub flush_rev($$$)
-{
-  $_[0] or return;
-  for my $i (0,1,2) {
-    $_[$i] =~ s/,\n?$//;
-  }
-  print "INSERT INTO text(old_id,old_text,old_flags) VALUES $_[0];\n";
-  $_[2] and print "INSERT INTO page(page_id,page_namespace,page_title,page_restrictions,page_counter,page_is_redirect,page_is_new,page_random,page_touched,page_latest,page_len) VALUES $_[2];\n";
-  print "INSERT INTO revision(rev_id,rev_page,rev_text_id,rev_comment,rev_user,rev_user_text,rev_timestamp,rev_minor_edit,rev_deleted) VALUES $_[1];\n";
-  for my $i (0,1,2) {
-    $_[$i] = '';
-  }
-}
-
-### flush($text, $rev, $page)
-sub flush($$$)
-{
-  flush_rev $_[0], $_[1], $_[2];
-  print "COMMIT;\n";
-  $committed = $cnt_page;
-}
-
-### pg_revision(\%page, $skip, $text, $rev, $page)
-sub pg_revision($$$$$)
+sub pg_revision($)
 {
   my $rev = {};
   opening_tag "revision";
@@ -250,54 +212,45 @@ sub pg_revision($$$$$)
     pg_rv_text $rev;
   };
   $@ and die "revision: $@";
+  push @{$_[0]{rev}}, $rev;
   closing_tag "revision";
-  $_[1] and return;
-  $$rev{id} =~ /^\d+$/ or return
-    warn("page '$_[0]{title}': ignoring bogus revision id '$$rev{id}'\n");
-  $_[0]{latest_len} = textify $$rev{text};
-  for my $f qw(comment contrib_user) {
-    textify $$rev{$f};
-  }
-  $$rev{timestamp} =~
-    s/^(\d\d\d\d)-(\d\d)-(\d\d)T(\d\d):(\d\d):(\d\d)Z$/'$1$2$3$4$5$6'/
-      or return warn("page '$_[0]{title}' rev $$rev{id}: ",
-		     "bogus timestamp '$$rev{timestamp}'\n");
-  $_[2] .= "($$rev{id},$$rev{text},'utf-8'),\n";
-  $$rev{minor} = defined $$rev{minor} ? 1 : 0;
-  $_[3] .= "($$rev{id},$_[0]{id},$$rev{id},$$rev{comment},"
-    .($$rev{contrib_id}||0)
-    .",$$rev{contrib_user},$$rev{timestamp},$$rev{minor},0),\n";
-  $_[0]{latest} = $$rev{id};
-  $_[0]{latest_start} = substr $$rev{text}, 0, 20;
-  if (length $_[2] > $Buffer_Size) {
-    flush_rev $_[2], $_[3], $_[4];
-    $_[0]{do_commit} = 1;
-  }
-  ++$cnt_rev % 1000 == 0 and stats;
 }
 
-### page($text, $rev, $page)
 sub page($$$)
 {
   opening_tag "page";
   my %page;
-  ++$cnt_page;
   eval {
     simple_elt title => \%page;
     simple_elt id => \%page;
     simple_opt_elt restrictions => \%page;
-    while (1) {
-      pg_revision \%page, $skip, $_[0], $_[1], $_[2];
-    }
+    pg_revision \%page;
   };
-  # note: $@ is always defined
-  $@ =~ /^expected revision element / or die "page: $@";
+  $@ and die "page: $@";
   closing_tag "page";
   if ($skip) {
     --$skip;
   } else {
     $page{id} =~ /^\d+$/
       or warn("page '$page{title}': bogus id '$page{id}'\n");
+    foreach (@{$page{rev}}) {
+      $$_{id} =~ /^\d+$/
+        or warn("page '$page{title}': ignoring bogus revision id '$$_{id}'\n"),
+          next;
+      $$_{len} = textify $$_{text};
+      for my $f qw(comment contrib_user) {
+        textify $$_{$f};
+      }
+      $$_{timestamp} =~
+        s/^(\d\d\d\d)-(\d\d)-(\d\d)T(\d\d):(\d\d):(\d\d)Z$/'$1$2$3$4$5$6'/
+          or warn("page '$page{title}' rev $$_{id}: ",
+                  "bogus timestamp '$$_{timestamp}'\n"),
+                    next;
+      $_[0] .= "($$_{id},$$_{text},'utf-8'),\n";
+      $$_{minor} = defined $$_{minor} ? 1 : 0;
+      $_[1] .= "($$_{id},$page{id},$$_{id},$$_{comment},".($$_{contrib_id}||0)
+        .",$$_{contrib_user},$$_{timestamp},$$_{minor},0),\n";
+    }
     my $ns;
     if ($page{title} =~ s/$ns_pattern//o) {
       $ns = $namespace{$1};
@@ -308,25 +261,52 @@ sub page($$$)
       textify $page{$f};
     }
     if (Compat) {
-      $page{redirect} = $page{latest_start} =~ /^'#(?:REDIRECT|redirect) / ?
-	1 : 0;
+      $page{redirect} = $page{rev}[0]{text} =~ /^'#(?:REDIRECT|redirect) / ?
+        1 : 0;
     } else {
-      $page{redirect} = $page{latest_start} =~ /^'#REDIRECT /i ? 1 : 0;
+      $page{redirect} = $page{rev}[0]{text} =~ /^'#REDIRECT /i ? 1 : 0;
     }
+    $page{latest} = $page{rev}[0]{id};
     $page{title} =~ y/ /_/;
     if (Compat) {
       $_[2] .= "($page{id},$ns,$page{title},$page{restrictions},0,"
-	."$page{redirect},0,RAND(),"
-	  ."DATE_ADD('1970-01-01', INTERVAL UNIX_TIMESTAMP() SECOND)+0,"
-	    ."$page{latest},$page{latest_len}),\n";
+        ."$page{redirect},0,RAND(),"
+          ."DATE_ADD('1970-01-01', INTERVAL UNIX_TIMESTAMP() SECOND)+0,"
+            ."$page{latest},$page{rev}[0]{len}),\n";
     } else {
       $_[2] .= "($page{id},$ns,$page{title},$page{restrictions},0,"
-	."$page{redirect},0,RAND(),NOW(),$page{latest},$page{latest_len}),\n";
+        ."$page{redirect},0,RAND(),NOW(),$page{latest},$page{rev}[0]{len}),\n";
     }
-    if ($page{do_commit}) {
-      flush $_[0], $_[1], $_[2];
-      print "BEGIN;\n";
-    }
+  }
+  $cnt_rev += @{$page{rev}};
+  ++$cnt_page;
+}
+
+my $start = time;
+
+sub stats()
+{
+  my $s = time - $start;
+  $s ||= 1;
+  printf STDERR "%9d pages (%7.3f/s), %9d revisions (%7.3f/s) in %d seconds\n",
+    $cnt_page, $cnt_page/$s, $cnt_rev, $cnt_rev/$s, $s;
+}
+
+sub flush($$$)
+{
+  $_[0] or return;
+  for my $i (0,1,2) {
+    $_[$i] =~ s/,\n?$//;
+  }
+  print "BEGIN;
+INSERT INTO text(old_id,old_text,old_flags) VALUES $_[0];
+INSERT INTO page(page_id,page_namespace,page_title,page_restrictions,page_counter,page_is_redirect,page_is_new,page_random,page_touched,page_latest,page_len) VALUES $_[2];
+INSERT INTO revision(rev_id,rev_page,rev_text_id,rev_comment,rev_user,rev_user_text,rev_timestamp,rev_minor_edit,rev_deleted) VALUES $_[1];
+COMMIT;
+";
+  $committed = $cnt_page;
+  for my $i (0,1,2) {
+    $_[$i] = '';
   }
 }
 
@@ -340,26 +320,30 @@ my $SchemaLoc = "http://www.mediawiki.org/xml/export-$SchemaVer/";
 my $Schema    = "http://www.mediawiki.org/xml/export-$SchemaVer.xsd";
 
 my $help;
-GetOptions("skip=i"		=> \$skip,
-	   "help"		=> \$help) or pod2usage(2);
+GetOptions("skip=i"           => \$skip,
+           "help"             => \$help) or pod2usage(2);
 $help and pod2usage(1);
 
 getline;
-m|^$|
-  or die "unknown schema or invalid first line\n";
+$_ eq qq(<mediawiki xmlns="$SchemaLoc").
+  qq( xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance").
+  qq( xsi:schemaLocation="$SchemaLoc $Schema" version="$SchemaVer").
+  qq( xml:lang="en">\n) or die "unknown schema or invalid first line\n";
 getline;
 $SIG{TERM} = $SIG{INT} = \&terminate;
 siteinfo;
-my ($text, $rev, $page) = ('', '', '');
+my ($text, $rev, $page) = ('');
 eval {
   while (1) {
     page $text, $rev, $page;
+    length $text > 512*1024 and flush $text, $rev, $page;
+    $cnt_page % 1000 == 0 and stats;
   }
 };
 $@ =~ /^expected page element / or die "$@ (committed $committed pages)\n";
 flush $text, $rev, $page;
 stats;
-m|| or die "mediawiki: expected closing tag in line $.\n";
+m|</mediawiki>| or die "mediawiki: expected closing tag in line $.\n";
 
 =head1 COPYRIGHT
 
