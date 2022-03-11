@@ -269,8 +269,10 @@ sub pg_revision($$$$$)
     pg_rv_contributor $rev;
     simple_opt_elt minor => $rev;
     pg_rv_comment $rev;
-    simple_opt_elt sha1 => $rev;
     pg_rv_text $rev;
+    simple_opt_elt sha1 => $rev;
+    simple_opt_elt model => $rev;
+    simple_opt_elt format => $rev;
   };
   $@ and die "revision: $@";
   closing_tag "revision";
@@ -278,7 +280,7 @@ sub pg_revision($$$$$)
   $$rev{id} =~ /^\d+$/ or return
     warn("page '$_[0]{title}': ignoring bogus revision id '$$rev{id}'\n");
   $_[0]{latest_len} = textify $$rev{text};
-  for my $f qw(comment contrib_user) {
+  for my $f (qw(comment contrib_user)) {
     textify $$rev{$f};
   }
   $$rev{timestamp} =~
@@ -307,7 +309,7 @@ sub page($$$)
   ++$cnt_page;
   eval {
     simple_elt title => \%page;
-    simple_elt ns => \%page;
+    simple_opt_elt ns => \%page;
     simple_elt id => \%page;
     redirect_elt \%page;
     simple_opt_elt restrictions => \%page;
@@ -330,7 +332,7 @@ sub page($$$)
     } else {
       $ns = 0;
     }
-    for my $f qw(title restrictions) {
+    for my $f (qw(title restrictions)) {
       textify $page{$f};
     }
     if (Compat) {
@@ -361,7 +363,7 @@ sub terminate
   die "terminated by SIG$_[0]\n";
 }
  
-my $SchemaVer = '0.6';
+my $SchemaVer = '0.8';
 my $SchemaLoc = "http://www.mediawiki.org/xml/export-$SchemaVer/";
 my $Schema    = "http://www.mediawiki.org/xml/export-$SchemaVer.xsd";
  
