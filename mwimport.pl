@@ -264,12 +264,13 @@ sub pg_revision($$$$$)
   eval {
     my %revision;
     simple_elt id => $rev;
+    simple_opt_elt parentid => $rev;
     simple_elt timestamp => $rev;
     pg_rv_contributor $rev;
     simple_opt_elt minor => $rev;
     pg_rv_comment $rev;
-    pg_rv_text $rev;
     simple_opt_elt sha1 => $rev;
+    pg_rv_text $rev;
   };
   $@ and die "revision: $@";
   closing_tag "revision";
