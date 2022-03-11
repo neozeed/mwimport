@@ -1,28 +1,28 @@
 #!/usr/bin/perl -w
 =head1 NAME
-
+ 
 mwimport -- quick and dirty mediawiki importer
-
+ 
 =head1 SYNOPSIS
-
+ 
 cat pages.xml | mwimport [-s N|--skip=N]
-
+ 
 =cut
-
+ 
 use strict;
 use Getopt::Long;
 use Pod::Usage;
-
+ 
 my ($cnt_page, $cnt_rev, %namespace, $ns_pattern);
 my $committed = 0;
 my $skip = 0;
-
+ 
 ## set this to 1 to match "mwdumper --format=sql:1.5" as close as possible
 sub Compat() { 0 }
-
+ 
 # 512kB is what mwdumper uses, but 4MB gives much better performance here
 my $Buffer_Size = Compat ? 512*1024 : 4*1024*1024;
-
+ 
 sub textify($)
 {
   my $l;
@@ -46,19 +46,19 @@ sub textify($)
   }
   return $l;
 }
-
+ 
 sub getline()
 {
   $_ = <>;
   defined $_ or die "eof at line $.\n";
 }
-
+ 
 sub ignore_elt($)
 {
   m|^\s*<$_[0]>.*?</$_[0]>\n$| or die "expected $_[0] element in line $.\n";
   getline;
 }
-
+ 
 sub simple_elt($$)
 {
   if (m|^\s*<$_[0]\s*/>\n$|) {
@@ -70,7 +70,7 @@ sub simple_elt($$)
   }
   getline;
 }
-
+ 
 sub simple_opt_elt($$)
 {
   if (m|^\s*<$_[0]\s*/>\n$|) {
@@ -82,28 +82,28 @@ sub simple_opt_elt($$)
   }
   getline;
 }
-
+ 
 sub opening_tag($)
 {
   m|^\s*<$_[0]>\n$| or die "expected $_[0] element in line $.\n";
   getline;
 }
-
+ 
 sub closing_tag($)
 {
   m|^\s*</$_[0]>\n$| or die "$_[0]: expected closing tag in line $.\n";
   getline;
 }
-
+ 
 sub si_nss_namespace()
 {
-  m|^\s*<namespace key="(-?\d+)"\s*/>()\n|
-    or m|^\s*<namespace key="(-?\d+)">(.*?)</namespace>\n|
+  m|^\s*<namespace key="(-?\d+)"[^/]*?/>()\n|
+    or m|^\s*<namespace key="(-?\d+)"[^>]*?>(.*?)</namespace>\n|
     or die "expected namespace element in line $.\n";
   $namespace{$2} = $1;
   getline;
 }
-
+ 
 sub si_namespaces()
 {
   opening_tag("namespaces");
@@ -117,7 +117,7 @@ sub si_namespaces()
   $ns_pattern = '^('.join('|',map { quotemeta } keys %namespace).'):';
   closing_tag("namespaces");
 }
-
+ 
 sub siteinfo()
 {
   opening_tag("siteinfo");
@@ -133,7 +133,7 @@ sub siteinfo()
     si_namespaces;
     print "-- MediaWiki XML dump converted to SQL by mwimport
 BEGIN;
-
+ 
 -- Site: $site{sitename}
 -- URL: $site{base}
 -- Generator: $site{generator}
@@ -146,31 +146,37 @@ BEGIN;
   $@ and die "siteinfo: $@";
   closing_tag("siteinfo");
 }
-
+ 
 sub pg_rv_contributor($)
 {
-  opening_tag "contributor";
-  my %c;
-  eval {
-    simple_elt username => \%c;
-    simple_elt id => \%c;
-    $_[0]{contrib_user} = $c{username};
-    $_[0]{contrib_id}   = $c{id};
-  };
-  if ($@) {
-    $@ =~ /^expected username element / or die "contributor: $@";
+  if (m|^\s*<contributor deleted="deleted"\s*/>\s*\n|) {
+    getline;
+  } else {
+    opening_tag "contributor";
+    my %c;
     eval {
-      simple_elt ip => \%c;
-      $_[0]{contrib_user} = $c{ip};
+      simple_elt username => \%c;
+      simple_elt id => \%c;
+      $_[0]{contrib_user} = $c{username};
+      $_[0]{contrib_id}   = $c{id};
     };
-    $@ and die "contributor: $@";
+    if ($@) {
+      $@ =~ /^expected username element / or die "contributor: $@";
+      eval {
+        simple_elt ip => \%c;
+        $_[0]{contrib_user} = $c{ip};
+      };
+      $@ and die "contributor: $@";
+    }
+    closing_tag "contributor";
   }
-  closing_tag "contributor";
 }
-
+ 
 sub pg_rv_comment($)
 {
   if (m|^\s*<comment\s*/>\s*\n|) {
+    getline;
+  } elsif (m|^\s*<comment deleted="deleted"\s*/>\s*\n|) {
     getline;
   } elsif (s|^\s*<comment>([^<]*)||g) {
     while (1) {
@@ -184,10 +190,13 @@ sub pg_rv_comment($)
     return;
   }
 }
-
+ 
 sub pg_rv_text($)
 {
   if (m|^\s*<text xml:space="preserve"\s*/>\s*\n|) {
+    $_[0]{text} = '';
+    getline;
+  } elsif (m|^\s*<text deleted="deleted"\s*/>\s*\n|) {
     $_[0]{text} = '';
     getline;
   } elsif (s|^\s*<text xml:space="preserve">([^<]*)||g) {
@@ -202,9 +211,9 @@ sub pg_rv_text($)
     die "expected text element in line $.\n";
   }
 }
-
+ 
 my $start = time;
-
+ 
 sub stats()
 {
   my $s = time - $start;
@@ -212,7 +221,7 @@ sub stats()
   printf STDERR "%9d pages (%7.3f/s), %9d revisions (%7.3f/s) in %d seconds\n",
     $cnt_page, $cnt_page/$s, $cnt_rev, $cnt_rev/$s, $s;
 }
-
+ 
 ### flush_rev($text, $rev, $page)
 sub flush_rev($$$)
 {
@@ -222,12 +231,12 @@ sub flush_rev($$$)
   }
   print "INSERT INTO text(old_id,old_text,old_flags) VALUES $_[0];\n";
   $_[2] and print "INSERT INTO page(page_id,page_namespace,page_title,page_restrictions,page_counter,page_is_redirect,page_is_new,page_random,page_touched,page_latest,page_len) VALUES $_[2];\n";
-  print "INSERT INTO revision(rev_id,rev_page,rev_text_id,rev_comment,rev_user,rev_user_text,rev_timestamp,rev_minor_edit,rev_deleted) VALUES $_[1];\n";
+  print "INSERT INTO revision(rev_id,rev_page,rev_text_id,rev_comment,rev_user,rev_user_text,rev_timestamp,rev_minor_edit,rev_deleted,rev_parent_id) VALUES $_[1];\n";
   for my $i (0,1,2) {
     $_[$i] = '';
   }
 }
-
+ 
 ### flush($text, $rev, $page)
 sub flush($$$)
 {
@@ -235,7 +244,7 @@ sub flush($$$)
   print "COMMIT;\n";
   $committed = $cnt_page;
 }
-
+ 
 ### pg_revision(\%page, $skip, $text, $rev, $page)
 sub pg_revision($$$$$)
 {
@@ -267,7 +276,7 @@ sub pg_revision($$$$$)
   $$rev{minor} = defined $$rev{minor} ? 1 : 0;
   $_[3] .= "($$rev{id},$_[0]{id},$$rev{id},$$rev{comment},"
     .($$rev{contrib_id}||0)
-    .",$$rev{contrib_user},$$rev{timestamp},$$rev{minor},0),\n";
+    .",$$rev{contrib_user},$$rev{timestamp},$$rev{minor},0,$_[0]{latest}),\n";
   $_[0]{latest} = $$rev{id};
   $_[0]{latest_start} = substr $$rev{text}, 0, 20;
   if (length $_[2] > $Buffer_Size) {
@@ -276,7 +285,7 @@ sub pg_revision($$$$$)
   }
   ++$cnt_rev % 1000 == 0 and stats;
 }
-
+ 
 ### page($text, $rev, $page)
 sub page($$$)
 {
@@ -286,7 +295,9 @@ sub page($$$)
   eval {
     simple_elt title => \%page;
     simple_elt id => \%page;
+    simple_opt_elt redirect => \%page;
     simple_opt_elt restrictions => \%page;
+    $page{latest} = 0;
     while (1) {
       pg_revision \%page, $skip, $_[0], $_[1], $_[2];
     }
@@ -322,7 +333,7 @@ sub page($$$)
             ."$page{latest},$page{latest_len}),\n";
     } else {
       $_[2] .= "($page{id},$ns,$page{title},$page{restrictions},0,"
-        ."$page{redirect},0,RAND(),NOW(),$page{latest},$page{latest_len}),\n";
+        ."$page{redirect},0,RAND(),NOW()+0,$page{latest},$page{latest_len}),\n";
     }
     if ($page{do_commit}) {
       flush $_[0], $_[1], $_[2];
@@ -330,21 +341,21 @@ sub page($$$)
     }
   }
 }
-
+ 
 sub terminate
 {
   die "terminated by SIG$_[0]\n";
 }
-
-my $SchemaVer = '0.3';
+ 
+my $SchemaVer = '0.4';
 my $SchemaLoc = "http://www.mediawiki.org/xml/export-$SchemaVer/";
 my $Schema    = "http://www.mediawiki.org/xml/export-$SchemaVer.xsd";
-
+ 
 my $help;
-GetOptions("skip=i"           => \$skip,
-           "help"             => \$help) or pod2usage(2);
+GetOptions("skip=i"             => \$skip,
+           "help"            => \$help) or pod2usage(2);
 $help and pod2usage(1);
-
+ 
 getline;
 m|^<mediawiki \Qxmlns="$SchemaLoc" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="$SchemaLoc $Schema" version="$SchemaVer"\E xml:lang="..">$|
   or die "unknown schema or invalid first line\n";
@@ -361,20 +372,20 @@ $@ =~ /^expected page element / or die "$@ (committed $committed pages)\n";
 flush $text, $rev, $page;
 stats;
 m|</mediawiki>| or die "mediawiki: expected closing tag in line $.\n";
-
+ 
 =head1 COPYRIGHT
-
+ 
 Copyright 2007 by Robert Bihlmeyer
-
+ 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
 the Free Software Foundation; either version 2 of the License, or
 (at your option) any later version.
-
+ 
 You may also redistribute and/or modify this software under the terms
 of the GNU Free Documentation License without invariant sections, and
 without front-cover or back-cover texts.
-
+ 
 This program is distributed in the hope that it will be useful,
 but WITHOUT ANY WARRANTY; without even the implied warranty of
 MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
