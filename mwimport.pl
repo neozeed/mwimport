@@ -231,7 +231,7 @@ sub flush_rev($$$)
   }
   print "INSERT INTO text(old_id,old_text,old_flags) VALUES $_[0];\n";
   $_[2] and print "INSERT INTO page(page_id,page_namespace,page_title,page_restrictions,page_counter,page_is_redirect,page_is_new,page_random,page_touched,page_latest,page_len) VALUES $_[2];\n";
-  print "INSERT INTO revision(rev_id,rev_page,rev_text_id,rev_comment,rev_user,rev_user_text,rev_timestamp,rev_minor_edit,rev_deleted,rev_parent_id) VALUES $_[1];\n";
+  print "INSERT INTO revision(rev_id,rev_page,rev_text_id,rev_comment,rev_user,rev_user_text,rev_timestamp,rev_minor_edit,rev_deleted,rev_len,rev_parent_id) VALUES $_[1];\n";
   for my $i (0,1,2) {
     $_[$i] = '';
   }
@@ -276,9 +276,9 @@ sub pg_revision($$$$$)
   $$rev{minor} = defined $$rev{minor} ? 1 : 0;
   $_[3] .= "($$rev{id},$_[0]{id},$$rev{id},$$rev{comment},"
     .($$rev{contrib_id}||0)
-    .",$$rev{contrib_user},$$rev{timestamp},$$rev{minor},0,$_[0]{latest}),\n";
+    .",$$rev{contrib_user},$$rev{timestamp},$$rev{minor},0,$_[0]{latest_len},$_[0]{latest}),\n";
   $_[0]{latest} = $$rev{id};
-  $_[0]{latest_start} = substr $$rev{text}, 0, 20;
+  $_[0]{latest_start} = substr $$rev{text}, 0, 60;
   if (length $_[2] > $Buffer_Size) {
     flush_rev $_[2], $_[3], $_[4];
     $_[0]{do_commit} = 1;
@@ -347,7 +347,7 @@ sub terminate
   die "terminated by SIG$_[0]\n";
 }
  
-my $SchemaVer = '0.4';
+my $SchemaVer = '0.5';
 my $SchemaLoc = "http://www.mediawiki.org/xml/export-$SchemaVer/";
 my $Schema    = "http://www.mediawiki.org/xml/export-$SchemaVer.xsd";
  
