@@ -83,6 +83,17 @@ sub simple_opt_elt($$)
   getline;
 }
  
+sub redirect_elt($)
+{
+  if (m|^\s*<redirect\s*title="([^"]*)"\s*/>\n$|) { # " -- GeSHI syntax highlighting breaks on this line
+    $_[0]{redirect} = $1;
+  } else {
+    simple_opt_elt redirect => $_[0];
+    return;
+  }
+  getline;
+}
+ 
 sub opening_tag($)
 {
   m|^\s*<$_[0]>\n$| or die "expected $_[0] element in line $.\n";
@@ -126,7 +137,7 @@ sub siteinfo()
     simple_elt sitename => \%site;
     simple_elt base => \%site;
     simple_elt generator => \%site;
-    $site{generator} =~ /^MediaWiki 1.(9|10)alpha$/
+    $site{generator} =~ /^MediaWiki 1.20wmf1$/
       or warn("siteinfo: untested generator '$site{generator}',",
               " expect trouble ahead\n");
     simple_elt case => \%site;
@@ -258,6 +269,7 @@ sub pg_revision($$$$$)
     simple_opt_elt minor => $rev;
     pg_rv_comment $rev;
     pg_rv_text $rev;
+    simple_opt_elt sha1 => $rev;
   };
   $@ and die "revision: $@";
   closing_tag "revision";
@@ -294,8 +306,9 @@ sub page($$$)
   ++$cnt_page;
   eval {
     simple_elt title => \%page;
+    simple_elt ns => \%page;
     simple_elt id => \%page;
-    simple_opt_elt redirect => \%page;
+    redirect_elt \%page;
     simple_opt_elt restrictions => \%page;
     $page{latest} = 0;
     while (1) {
@@ -347,13 +360,13 @@ sub terminate
   die "terminated by SIG$_[0]\n";
 }
  
-my $SchemaVer = '0.5';
+my $SchemaVer = '0.6';
 my $SchemaLoc = "http://www.mediawiki.org/xml/export-$SchemaVer/";
 my $Schema    = "http://www.mediawiki.org/xml/export-$SchemaVer.xsd";
  
 my $help;
 GetOptions("skip=i"             => \$skip,
-           "help"            => \$help) or pod2usage(2);
+           "help"               => \$help) or pod2usage(2);
 $help and pod2usage(1);
  
 getline;
