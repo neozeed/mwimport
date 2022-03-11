@@ -135,17 +135,19 @@ sub siteinfo()
   eval {
     my %site;
     simple_elt sitename => \%site;
+    simple_elt dbname => \%site;
     simple_elt base => \%site;
     simple_elt generator => \%site;
     $site{generator} =~ /^MediaWiki 1.20wmf1$/
       or warn("siteinfo: untested generator '$site{generator}',",
-              " expect trouble ahead\n");
+	      " expect trouble ahead\n");
     simple_elt case => \%site;
     si_namespaces;
     print "-- MediaWiki XML dump converted to SQL by mwimport
 BEGIN;
  
 -- Site: $site{sitename}
+-- DBName: $site{dbname}
 -- URL: $site{base}
 -- Generator: $site{generator}
 -- Case: $site{case}
@@ -269,10 +271,10 @@ sub pg_revision($$$$$)
     pg_rv_contributor $rev;
     simple_opt_elt minor => $rev;
     pg_rv_comment $rev;
-    pg_rv_text $rev;
-    simple_opt_elt sha1 => $rev;
     simple_opt_elt model => $rev;
     simple_opt_elt format => $rev;
+    pg_rv_text $rev;
+    simple_opt_elt sha1 => $rev;
   };
   $@ and die "revision: $@";
   closing_tag "revision";
@@ -286,7 +288,7 @@ sub pg_revision($$$$$)
   $$rev{timestamp} =~
     s/^(\d\d\d\d)-(\d\d)-(\d\d)T(\d\d):(\d\d):(\d\d)Z$/'$1$2$3$4$5$6'/
       or return warn("page '$_[0]{title}' rev $$rev{id}: ",
-                     "bogus timestamp '$$rev{timestamp}'\n");
+		     "bogus timestamp '$$rev{timestamp}'\n");
   $_[2] .= "($$rev{id},$$rev{text},'utf-8'),\n";
   $$rev{minor} = defined $$rev{minor} ? 1 : 0;
   $_[3] .= "($$rev{id},$_[0]{id},$$rev{id},$$rev{comment},"
@@ -324,6 +326,7 @@ sub page($$$)
   if ($skip) {
     --$skip;
   } else {
+    $page{title} or return;
     $page{id} =~ /^\d+$/
       or warn("page '$page{title}': bogus id '$page{id}'\n");
     my $ns;
@@ -337,19 +340,19 @@ sub page($$$)
     }
     if (Compat) {
       $page{redirect} = $page{latest_start} =~ /^'#(?:REDIRECT|redirect) / ?
-        1 : 0;
+	1 : 0;
     } else {
       $page{redirect} = $page{latest_start} =~ /^'#REDIRECT /i ? 1 : 0;
     }
     $page{title} =~ y/ /_/;
     if (Compat) {
       $_[2] .= "($page{id},$ns,$page{title},$page{restrictions},0,"
-        ."$page{redirect},0,RAND(),"
-          ."DATE_ADD('1970-01-01', INTERVAL UNIX_TIMESTAMP() SECOND)+0,"
-            ."$page{latest},$page{latest_len}),\n";
+	."$page{redirect},0,RAND(),"
+	  ."DATE_ADD('1970-01-01', INTERVAL UNIX_TIMESTAMP() SECOND)+0,"
+	    ."$page{latest},$page{latest_len}),\n";
     } else {
       $_[2] .= "($page{id},$ns,$page{title},$page{restrictions},0,"
-        ."$page{redirect},0,RAND(),NOW()+0,$page{latest},$page{latest_len}),\n";
+	."$page{redirect},0,RAND(),NOW()+0,$page{latest},$page{latest_len}),\n";
     }
     if ($page{do_commit}) {
       flush $_[0], $_[1], $_[2];
@@ -363,13 +366,13 @@ sub terminate
   die "terminated by SIG$_[0]\n";
 }
  
-my $SchemaVer = '0.8';
+my $SchemaVer = '0.10';
 my $SchemaLoc = "http://www.mediawiki.org/xml/export-$SchemaVer/";
 my $Schema    = "http://www.mediawiki.org/xml/export-$SchemaVer.xsd";
  
 my $help;
-GetOptions("skip=i"             => \$skip,
-           "help"               => \$help) or pod2usage(2);
+GetOptions("skip=i"		=> \$skip,
+	   "help"		=> \$help) or pod2usage(2);
 $help and pod2usage(1);
  
 getline;
